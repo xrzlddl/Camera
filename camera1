@@ -1,0 +1,138 @@
+#!/bin/bash
+
+#QQ:大临泉-冬子 QQ:1162910900
+#DDL自动采集RTSP监控视频流脚本V:20210811
+
+#IP地址
+IP="1.1.1.1"
+#端口
+PORT="554"
+#用户名
+PUSER="admin"
+#密码
+PPWD="123456"
+#切片大小
+MAXMIN=$[ 5 * 60 ]
+#文件夹下允许多少文件
+MAXFILE="60"
+#存储路径
+UVPATH="/mnt/sda1/video/camera1"
+#监控保留天数
+DAT="60"
+#日志
+LOG="/var/log/camera1-$IP:$PORT.log"
+FFLOG="/var/log/camera1-ffmpeg-$IP:$PORT.log"
+
+#清理旧日志
+[ -f $LOG ] && rm -f $LOG
+[ -f $FFLOG ] && rm -f $FFLOG
+
+#环境检查
+type ffmpeg >/dev/null 2>&1 || { echo >&2 "I require ffmpeg but it's not installed.  Aborting."; exit 1; }
+type nc >/dev/null 2>&1 || { echo >&2 "I require nc but it's not installed.  Aborting."; exit 1; }
+
+#删除历史录像
+SUPTIME=$(date +%s)
+DTIME=$[ $SUPTIME+20 ]
+echo "$(date "+%Y-%m-%d %H:%M:%S") 检查并删除历史录像" >>$LOG
+find $UVPATH -mtime +$DAT |xargs rm -rf  >>$LOG  2>&1 
+
+#help方法
+usage(){
+	echo "Usage:$0 [--help] {stop|status}"
+}
+
+#stop方法
+stop(){
+	kill -INT $(ps -ef | grep "rtsp://$PUSER:$PPWD@$IP:$PORT" | grep -v grep | awk  '{print $2}') >/dev/null 2>&1
+	kill -9  $(ps -ef | grep "$0" | grep -v grep | awk  '{print $2}')   >/dev/null 2>&1
+}
+
+#status方法
+status(){
+	echo "$(ps -ef | grep "$0" | grep -v -E 'grep|status')"
+}
+
+
+
+if [ $# -gt 0 ];then
+case $1 in
+	stop)
+		stop
+		exit 0
+		;;
+	status)
+		status
+		exit 0
+		;;
+	--help)
+		usage
+		exit 0 
+esac
+fi
+
+while [ 1 ]
+do
+	#端口检查
+	check_ret=`nc -z -w 3 $IP $PORT &>/dev/null && echo up || echo down`
+	if [ $check_ret = "down" ]; then
+		sleep 1
+		continue
+	fi
+	
+	echo "$(date "+%Y-%m-%d %H:%M:%S") Camer ready" >> $LOG
+	
+	#获取系统时间
+	LTIME=$(date "+%Y%m%d%H%M%S")
+	#创建目录
+	VPATH=$UVPATH
+	VPATH=$VPATH/$LTIME
+	
+	echo "$(date "+%Y-%m-%d %H:%M:%S")  当前路径: $VPATH" >> $LOG
+
+	mkdir -p $VPATH
+	#开始采集
+	RTSP=" -rtsp_transport tcp -i rtsp://$PUSER:$PPWD@$IP:$PORT/h264/ch1/main/av_stream  -vcodec copy -acodec copy -map 0 -f segment -segment_time $MAXMIN -segment_format mp4 $VPATH/camera-$IP-%03d.mp4" 
+	ffmpeg  `echo  $RTSP`  > $FFLOG  2>&1 &
+	echo "$(date "+%Y-%m-%d %H:%M:%S") 开始采集..." >> $LOG
+	#监控文件变化
+	while [ 1 ] 
+	do
+		FILENUM=`ls -l $VPATH |grep "^-"|wc -l`
+		if [  $FILENUM -ge $MAXFILE ]; then
+			#发信号
+			kill -INT $(ps -ef | grep "rtsp://$PUSER:$PPWD@$IP:$PORT" | grep -v grep | awk  '{print $2}')
+			SIZETIME="0"
+			echo "$(date "+%Y-%m-%d %H:%M:%S") 文件超出 $MAXFILE 开始重启" >>$LOG
+			#回到主循环
+			break
+		fi
+
+		#防卡死
+		#获取运行状态
+		ps -fe | grep "rtsp://$PUSER:$PPWD@$IP:$PORT" |grep -v grep > /dev/null
+		if [ $? -ne 0 ]
+		then
+			#检测到采集异常 
+			echo "$(date "+%Y-%m-%d %H:%M:%S") 采集异常重新采集" >>$LOG 
+			#回到主循环
+			break
+		
+		fi
+
+		#清理历史录像(每2小时检查)
+	    SUPTIME=$(date +%s)
+	    if [ $SUPTIME -ge $DTIME ];then
+	       	DTIME=$[ $SUPTIME+7200 ]
+	    	echo "$(date "+%Y-%m-%d %H:%M:%S") 检查并删除历史录像" >>$LOG
+	    	find $UVPATH -mtime +$DAT |xargs rm -rf  >>$LOG  2>&1 
+	    fi
+	      
+	      sleep 10
+	done
+done
+
+exit 0
+
+
+
