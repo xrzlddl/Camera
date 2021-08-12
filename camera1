@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #QQ:大临泉-冬子 QQ:1162910900
-#DDL自动采集RTSP监控视频流脚本V:20210811
+#DDL自动采集RTSP监控视频流脚本V:20210812
 
 #IP地址
 IP="1.1.1.1"
@@ -10,7 +10,7 @@ PORT="554"
 #用户名
 PUSER="admin"
 #密码
-PPWD="123456"
+PPWD="12345"
 #切片大小
 MAXMIN=$[ 5 * 60 ]
 #文件夹下允许多少文件
@@ -22,6 +22,11 @@ DAT="60"
 #日志
 LOG="/var/log/camera1-$IP:$PORT.log"
 FFLOG="/var/log/camera1-ffmpeg-$IP:$PORT.log"
+
+
+#初始化(不要修改)
+OFFLOGSIZE="0"
+
 
 #清理旧日志
 [ -f $LOG ] && rm -f $LOG
@@ -71,12 +76,15 @@ case $1 in
 esac
 fi
 
+#防止开机未获取到网络
+#sleep 10
+
 while [ 1 ]
 do
 	#端口检查
 	check_ret=`nc -z -w 3 $IP $PORT &>/dev/null && echo up || echo down`
 	if [ $check_ret = "down" ]; then
-		sleep 1
+		sleep 3
 		continue
 	fi
 	
@@ -95,40 +103,58 @@ do
 	RTSP=" -rtsp_transport tcp -i rtsp://$PUSER:$PPWD@$IP:$PORT/h264/ch1/main/av_stream  -vcodec copy -acodec copy -map 0 -f segment -segment_time $MAXMIN -segment_format mp4 $VPATH/camera-$IP-%03d.mp4" 
 	ffmpeg  `echo  $RTSP`  > $FFLOG  2>&1 &
 	echo "$(date "+%Y-%m-%d %H:%M:%S") 开始采集..." >> $LOG
+	sleep 30
+
 	#监控文件变化
 	while [ 1 ] 
 	do
+		#切片
 		FILENUM=`ls -l $VPATH |grep "^-"|wc -l`
 		if [  $FILENUM -ge $MAXFILE ]; then
 			#发信号
 			kill -INT $(ps -ef | grep "rtsp://$PUSER:$PPWD@$IP:$PORT" | grep -v grep | awk  '{print $2}')
 			SIZETIME="0"
 			echo "$(date "+%Y-%m-%d %H:%M:%S") 文件超出 $MAXFILE 开始重启" >>$LOG
+			sleep 1
 			#回到主循环
 			break
 		fi
 
-		#防卡死
+		#防卡死方案1
 		#获取运行状态
 		ps -fe | grep "rtsp://$PUSER:$PPWD@$IP:$PORT" |grep -v grep > /dev/null
 		if [ $? -ne 0 ]
 		then
 			#检测到采集异常 
-			echo "$(date "+%Y-%m-%d %H:%M:%S") 采集异常重新采集" >>$LOG 
+			echo "$(date "+%Y-%m-%d %H:%M:%S") 进程异常重新采集" >>$LOG 
 			#回到主循环
 			break
 		
 		fi
 
+		#防卡死方案2
+		#获取FFMPEG日志块大小
+		[ -f $FFLOG ] && NFFLOGSIZE=$(stat -c %s $FFLOG) || OFFLOGSIZE="0"
+		if [ $NFFLOGSIZE -eq $OFFLOGSIZE ]; then
+			#干死这货
+			kill -9 $(ps -ef | grep "rtsp://$PUSER:$PPWD@$IP:$PORT" | grep -v grep | awk  '{print $2}')
+			echo "$(date "+%Y-%m-%d %H:%M:%S") 日志异常重新采集" >>$LOG 
+			#回到主循环
+			break
+		else
+			OFFLOGSIZE=$NFFLOGSIZE
+		fi
+
+
 		#清理历史录像(每2小时检查)
-	    SUPTIME=$(date +%s)
-	    if [ $SUPTIME -ge $DTIME ];then
+	    	SUPTIME=$(date +%s)
+	   	 if [ $SUPTIME -ge $DTIME ];then
 	       	DTIME=$[ $SUPTIME+7200 ]
 	    	echo "$(date "+%Y-%m-%d %H:%M:%S") 检查并删除历史录像" >>$LOG
 	    	find $UVPATH -mtime +$DAT |xargs rm -rf  >>$LOG  2>&1 
 	    fi
 	      
-	      sleep 10
+	      sleep 30
 	done
 done
 
